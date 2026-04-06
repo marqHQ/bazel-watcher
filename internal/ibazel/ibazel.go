@@ -421,7 +421,9 @@ func (i *IBazel) iterationMultiple(commandString string, commandToRun runnableCo
 	case WAIT:
 		select {
 		case e := <-i.sourceFileWatcher.Events():
-			if _, ok := i.filesWatched[i.sourceFileWatcher][e.Name]; ok && e.Op&modifyingEvents != 0 {
+			_, watched := i.filesWatched[i.sourceFileWatcher][e.Name]
+			log.Logf("DEBUG source event: %q op=%v watched=%v", e.Name, e.Op, watched)
+			if watched && e.Op&modifyingEvents != 0 {
 				log.Logf("\nChanged: %q. Rebuilding...", e.Name)
 				i.changeDetected(targets, "source", e.Name)
 				i.prevDir, _ = filepath.Split(e.Name)
@@ -852,6 +854,14 @@ func (i *IBazel) watcherRemove(dirWatched map[string][]string, watcher common.Wa
 	}
 
 	i.filesWatched[watcher] = filesWatched
+	count := 0
+	for k := range filesWatched {
+		if count == 0 {
+			log.Logf("DEBUG filesWatched sample key: %q", k)
+		}
+		count++
+	}
+	log.Logf("DEBUG filesWatched total: %d entries", count)
 }
 
 func (i *IBazel) queryArgs(args ...string) []string {
