@@ -33,6 +33,7 @@ type Logger interface{ Log(...interface{}) }
 const (
 	resetColor  color = "\033[0m"
 	bannerColor color = "\033[33m"
+	warnColor   color = "\033[33m"
 	errorColor  color = "\033[31m"
 	fatalColor  color = "\033[41m"
 	logColor    color = "\033[96m"
@@ -81,6 +82,28 @@ func Banner(lines ...string) {
 
 	logger.Log(fmt.Sprintf("%s%s%s", bannerColor, strings.Repeat("#", 80), resetColor))
 	NewLine()
+}
+
+// Warn prints a warning to the screen with a preamble.
+func Warn(msg string) {
+	if t, ok := logger.(interface {
+		Helper()
+	}); ok {
+		t.Helper()
+	}
+
+	Warnf(msg)
+}
+
+// Warnf prints a warning to the screen with a preamble.
+func Warnf(msg string, args ...interface{}) {
+	if t, ok := logger.(interface {
+		Helper()
+	}); ok {
+		t.Helper()
+	}
+
+	log(warnColor, msg, args...)
 }
 
 // Error prints an error to the screen with a preamble.

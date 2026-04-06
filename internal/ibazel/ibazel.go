@@ -814,8 +814,8 @@ func (i *IBazel) watcherAdd(query string, watcher common.Watcher, toWatch []stri
 	for _, file := range toWatch {
 		path, err := filepath.EvalSymlinks(file)
 		if err != nil {
-			log.Errorf("Error evaluating symbolic links for source file: %v", err)
-			return
+			log.Warnf("Error evaluating symbolic links for source file: %v", err)
+			continue
 		}
 
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
