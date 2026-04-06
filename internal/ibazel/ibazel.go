@@ -478,7 +478,8 @@ func (i *IBazel) iterationMultiple(commandString string, commandToRun runnableCo
 		var torun []string
 		if i.prevDir != "" && i.firstBuildPassed {
 			torun = i.srcDirToWatch[i.prevDir]
-		} else {
+		}
+		if len(torun) == 0 {
 			torun = targets
 		}
 
@@ -903,7 +904,13 @@ func dirWatchedByTarget(toWatchByTarget map[string][]string, targets []string, d
 
 	for _, target := range targets {
 		for _, file := range toWatchByTarget[target] {
-			parentDirectory, _ := filepath.Split(file)
+			// Resolve symlinks so directory keys match the resolved paths
+			// reported by the file watcher in event names.
+			resolved, err := filepath.EvalSymlinks(file)
+			if err != nil {
+				resolved = file
+			}
+			parentDirectory, _ := filepath.Split(resolved)
 			if idx := containsIdx(dirStorage[parentDirectory], target); idx == -1 {
 				dirStorage[parentDirectory] = append(dirStorage[parentDirectory], target)
 			}

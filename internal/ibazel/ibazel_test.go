@@ -347,6 +347,79 @@ func TestIBazelLoopMultiple(t *testing.T) {
 	assertState(WAIT)
 }
 
+func TestIBazelLoopMultiple_SymlinkedWorkspace(t *testing.T) {
+	// Regression test: when ibazel is launched from a symlinked directory,
+	// os.Getwd() returns the symlink path (e.g. /home/user/press/main) while
+	// the file watcher reports events using the resolved real path
+	// (e.g. /home/user/press/main-worktrees/branch-name). This caused
+	// srcDirToWatch (keyed by symlink paths) to miss lookups with prevDir
+	// (set from resolved event paths), resulting in zero targets being rebuilt.
+	i, _ := newIBazel(t)
+
+	// Close the real watchers created by New() before replacing with fakes
+	// to avoid leaking file descriptors.
+	i.buildFileWatcher.Close()
+	i.sourceFileWatcher.Close()
+	i.buildFileWatcher = &fakeFSNotifyWatcher{
+		EventChan: make(chan common.Event, 1),
+	}
+	i.sourceFileWatcher = &fakeFSNotifyWatcher{
+		EventChan: make(chan common.Event, 1),
+	}
+
+	defer i.Cleanup()
+
+	targets := []string{"//data-service:data-service", "//user-service:user-service"}
+
+	// Simulate the state after a successful initial build+run:
+	// srcDirToWatch was populated by dirWatchedByTarget using un-resolved
+	// (symlink) paths from queryForSourceFiles, which uses os.Getwd().
+	symlinkDir := "/home/user/press/main/data-service/app/controllers/"
+	// The file watcher resolves symlinks, so events use the real path.
+	resolvedDir := "/home/user/press/main-worktrees/branch-name/data-service/app/controllers/"
+	resolvedFile := resolvedDir + "MyController.scala"
+
+	i.srcDirToWatch = map[string][]string{
+		symlinkDir: {targets[0]},
+	}
+	i.filesWatched[i.sourceFileWatcher] = map[string][]string{
+		resolvedFile: {},
+	}
+	i.firstBuildPassed = true
+
+	var calledWithTargets []string
+	command := func(receivedTargets []string, debugArgs [][]string, argsLength int) ([]*bytes.Buffer, error) {
+		calledWithTargets = receivedTargets
+		return nil, nil
+	}
+
+	step := func() {
+		i.iterationMultiple("demo", command, targets, [][]string{{}, {}}, 0)
+	}
+
+	// Start in WAIT, send a source file change event with the resolved path.
+	i.state = WAIT
+	i.sourceFileWatcher.Events() <- common.Event{Op: common.Write, Name: resolvedFile}
+	step()
+	if i.state != DEBOUNCE_RUN {
+		t.Fatalf("Expected DEBOUNCE_RUN, got %s", i.state)
+	}
+
+	step() // debounce timer fires → RUN
+	if i.state != RUN {
+		t.Fatalf("Expected RUN, got %s", i.state)
+	}
+
+	step() // RUN executes the command
+	if i.state != WAIT {
+		t.Fatalf("Expected WAIT after RUN, got %s", i.state)
+	}
+
+	if len(calledWithTargets) == 0 {
+		t.Errorf("Command was called with zero targets; symlink/resolved path mismatch in srcDirToWatch caused empty rebuild")
+	}
+}
+
 func TestIBazelBuild(t *testing.T) {
 	log.SetTesting(t)
 
