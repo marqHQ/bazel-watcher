@@ -1,0 +1,27 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "ctl",
+    srcs = [
+        "ctl.go",
+        "tui.go",
+    ],
+    importpath = "github.com/bazelbuild/bazel-watcher/cmd/ibazel/ctl",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "@com_github_charmbracelet_bubbletea//:bubbletea",
+        "@com_github_charmbracelet_lipgloss//:lipgloss",
+    ],
+)
+
+go_test(
+    name = "ctl_test",
+    srcs = [
+        "ctl_test.go",
+        "tui_test.go",
+    ],
+    embed = [":ctl"],
+    deps = [
+        "@com_github_charmbracelet_bubbletea//:bubbletea",
+    ],
+)

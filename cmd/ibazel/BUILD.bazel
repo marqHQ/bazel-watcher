@@ -12,6 +12,7 @@ go_library(
     importpath = "github.com/bazelbuild/bazel-watcher/cmd/ibazel",
     visibility = ["//visibility:private"],
     deps = [
+        "//cmd/ibazel/ctl",
         "//internal/ibazel",
         "//internal/ibazel/log",
     ] + select({
