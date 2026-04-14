@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/bazelbuild/bazel-watcher/internal/ibazel/log"
@@ -119,13 +120,26 @@ func (i *IBazel) writeSessionFile(port int) {
 		return
 	}
 
-	// Use O_CREATE|O_EXCL for atomic creation — prevents race if two mrun sessions start simultaneously
+	// Try atomic creation first to prevent races between two mrun sessions starting simultaneously.
+	// If the file already exists, check whether the owning process is still alive — if not, it's
+	// a stale session from a previous crash, so remove it and retry.
 	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if err != nil {
-		if os.IsExist(err) {
-			log.Errorf("Another ibazel mrun is already running for this workspace (session file exists: %s)", filePath)
-			return
+	if err != nil && os.IsExist(err) {
+		if existing, readErr := os.ReadFile(filePath); readErr == nil {
+			var old sessionInfo
+			if json.Unmarshal(existing, &old) == nil && old.Pid > 0 {
+				proc, findErr := os.FindProcess(old.Pid)
+				if findErr == nil && proc.Signal(syscall.Signal(0)) == nil {
+					log.Errorf("Another ibazel mrun is already running for this workspace (pid %d, session file: %s)", old.Pid, filePath)
+					return
+				}
+			}
 		}
+		log.Logf("Removing stale session file: %s", filePath)
+		os.Remove(filePath)
+		f, err = os.OpenFile(filePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	}
+	if err != nil {
 		log.Errorf("Could not create session file: %v", err)
 		return
 	}
