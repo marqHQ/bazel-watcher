@@ -29,6 +29,7 @@ func (n *noopCommand) Kill()                                    { n.running = fa
 func (n *noopCommand) BeforeRebuild()                           {}
 func (n *noopCommand) AfterRebuild(_ *os.File) *bytes.Buffer    { return nil }
 func (n *noopCommand) IsSubprocessRunning() bool                 { return n.running }
+func (n *noopCommand) Pid() int                                  { return 0 }
 
 func newMockCommand() *mockCommand {
 	return &mockCommand{

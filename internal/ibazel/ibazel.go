@@ -441,7 +441,9 @@ func (i *IBazel) iteration(command string, commandToRun runnableCommand, targets
 }
 
 func (i *IBazel) iterationMultiple(commandString string, commandToRun runnableCommands, targets []string, debugArgs [][]string, argsLength int) {
-	log.Logf("State: %s", i.state)
+	if i.state != WAIT {
+		log.Logf("State: %s", i.state)
+	}
 	switch i.state {
 	case WAIT:
 		select {

@@ -50,6 +50,7 @@ type Command interface {
 	BeforeRebuild()
 	AfterRebuild(logFile *os.File) *bytes.Buffer
 	IsSubprocessRunning() bool
+	Pid() int
 }
 
 // start will be called by most implementations since this logic is extremely

@@ -83,7 +83,7 @@ func (i *IBazel) controlStatus(cmd ControlCommand) {
 		i.cmdsMu.RUnlock()
 		if inCmds && c != nil && c.IsSubprocessRunning() {
 			info.Status = TargetRunning
-			info.Pid = i.getCommandPid(target)
+			info.Pid = c.Pid()
 		} else if ts, ok := i.targetStates[target]; ok {
 			info.Status = ts.Status
 		} else {
@@ -365,13 +365,6 @@ func (i *IBazel) controlRemove(cmd ControlCommand) {
 
 	log.Logf("[ctl] Removed %s", cmd.Target)
 	cmd.Response <- ControlResponse{Success: true, Message: fmt.Sprintf("removed %s", cmd.Target)}
-}
-
-// getCommandPid returns the PID of the running command for a target, or 0 if not available.
-func (i *IBazel) getCommandPid(target string) int {
-	// The command interface doesn't expose PID directly.
-	// Return 0 as a placeholder — the status endpoint will show 0 for PID.
-	return 0
 }
 
 

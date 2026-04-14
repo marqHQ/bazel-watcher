@@ -98,3 +98,10 @@ func (c *defaultCommand) AfterRebuild(logFile *os.File) *bytes.Buffer {
 func (c *defaultCommand) IsSubprocessRunning() bool {
 	return c.pg != nil && subprocessRunning(c.pg.RootProcess())
 }
+
+func (c *defaultCommand) Pid() int {
+	if c.pg != nil && c.pg.RootProcess().Process != nil {
+		return c.pg.RootProcess().Process.Pid
+	}
+	return 0
+}
