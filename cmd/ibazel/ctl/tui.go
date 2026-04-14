@@ -153,19 +153,31 @@ func (m tuiModel) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "r":
 		if len(filtered) > 0 && m.cursor < len(filtered) {
-			return m, doAction(m.serverURL, "restart", filtered[m.cursor].Target)
+			t := filtered[m.cursor].Target
+			m.message = fmt.Sprintf("Restarting %s...", t)
+			m.msgExpiry = time.Time{}
+			return m, doAction(m.serverURL, "restart", t)
 		}
 	case "s":
 		if len(filtered) > 0 && m.cursor < len(filtered) {
-			return m, doAction(m.serverURL, "stop", filtered[m.cursor].Target)
+			t := filtered[m.cursor].Target
+			m.message = fmt.Sprintf("Stopping %s...", t)
+			m.msgExpiry = time.Time{}
+			return m, doAction(m.serverURL, "stop", t)
 		}
 	case "x":
 		if len(filtered) > 0 && m.cursor < len(filtered) {
-			return m, doAction(m.serverURL, "start", filtered[m.cursor].Target)
+			t := filtered[m.cursor].Target
+			m.message = fmt.Sprintf("Starting %s...", t)
+			m.msgExpiry = time.Time{}
+			return m, doAction(m.serverURL, "start", t)
 		}
 	case "d":
 		if len(filtered) > 0 && m.cursor < len(filtered) {
-			return m, doAction(m.serverURL, "remove", filtered[m.cursor].Target)
+			t := filtered[m.cursor].Target
+			m.message = fmt.Sprintf("Removing %s...", t)
+			m.msgExpiry = time.Time{}
+			return m, doAction(m.serverURL, "remove", t)
 		}
 	case "/":
 		m.filtering = true
