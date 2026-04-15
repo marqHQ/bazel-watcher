@@ -373,7 +373,12 @@ func (i *IBazel) loop(command string, commandToRun runnableCommand, targets []st
 
 func (i *IBazel) loopMultiple(command string, commandToRun runnableCommands, targets []string, debugArgs [][]string, argsLength int) error {
 	i.state = QUERY
+	var prevState State
 	for {
+		if i.state != prevState {
+			log.Logf("State: %s", i.state)
+			prevState = i.state
+		}
 		i.iterationMultiple(command, commandToRun, targets, debugArgs, argsLength)
 	}
 
@@ -441,9 +446,6 @@ func (i *IBazel) iteration(command string, commandToRun runnableCommand, targets
 }
 
 func (i *IBazel) iterationMultiple(commandString string, commandToRun runnableCommands, targets []string, debugArgs [][]string, argsLength int) {
-	if i.state != WAIT {
-		log.Logf("State: %s", i.state)
-	}
 	switch i.state {
 	case WAIT:
 		select {

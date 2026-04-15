@@ -82,7 +82,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		return m, nil
+		return m, tea.ClearScreen
 
 	case statusMsg:
 		m.targets = []targetStatus(msg)
@@ -319,15 +319,26 @@ func (m tuiModel) View() string {
 	}
 
 	// Footer: status/input + help on a single separator line
+	var footer string
 	if m.filtering {
-		b.WriteString(fmt.Sprintf("Filter: %s_", m.filter))
+		footer = fmt.Sprintf("Filter: %s_", m.filter)
 	} else if m.adding {
-		b.WriteString(fmt.Sprintf("Add target: %s_", m.addInput))
+		footer = fmt.Sprintf("Add target: %s_", m.addInput)
 	} else if m.message != "" {
-		b.WriteString(statusBarStyle.Render(m.message))
+		footer = statusBarStyle.Render(m.message)
 	} else {
-		b.WriteString(helpStyle.Render("r:restart  s:stop  x:start  a:add  d:remove  /:filter  q:quit"))
+		footer = helpStyle.Render("  r:restart  s:stop  x:start  a:add  d:remove  /:filter  q:quit")
 	}
+
+	// Pad with blank lines so the footer sits at the bottom of the terminal,
+	// preventing bubbletea's alt screen from adding trailing blank lines.
+	content := b.String()
+	contentLines := strings.Count(content, "\n")
+	// +2 for the footer line + one blank line after it
+	for i := contentLines + 2; i < m.height; i++ {
+		b.WriteString("\n")
+	}
+	b.WriteString(footer)
 
 	return b.String()
 }

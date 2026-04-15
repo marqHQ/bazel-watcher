@@ -84,6 +84,10 @@ func (i *IBazel) startControlServer() {
 	// the initial build, before the main loop reaches the WAIT state.
 	i.primeStatusCache()
 
+	// Periodically check if managed processes are still alive and update
+	// the cache so the TUI reflects crashes without waiting for a rebuild.
+	go i.processHealthCheck()
+
 	url := fmt.Sprintf("http://127.0.0.1:%d", port)
 	os.Setenv("IBAZEL_CONTROL_URL", url)
 
@@ -400,4 +404,33 @@ func (i *IBazel) primeStatusCache() {
 	statusCacheMu.Unlock()
 
 	i.refreshListCache()
+}
+
+const healthCheckInterval = 3 * time.Second
+
+// processHealthCheck periodically checks if managed processes are still alive.
+// When a process that was "running" has exited, it updates targetStates to
+// "stopped" and refreshes the cache so clients see the change immediately.
+func (i *IBazel) processHealthCheck() {
+	for {
+		time.Sleep(healthCheckInterval)
+
+		changed := false
+		i.cmdsMu.RLock()
+		for _, target := range i.allTargets {
+			c, inCmds := i.cmds[target]
+			if inCmds && c != nil && !c.IsSubprocessRunning() {
+				ts, hasState := i.targetStates[target]
+				if hasState && ts.Status == TargetRunning {
+					ts.Status = TargetStopped
+					changed = true
+				}
+			}
+		}
+		i.cmdsMu.RUnlock()
+
+		if changed {
+			i.refreshStatusCache()
+		}
+	}
 }
