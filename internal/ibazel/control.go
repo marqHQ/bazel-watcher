@@ -135,6 +135,7 @@ func (i *IBazel) controlRestart(cmd ControlCommand) {
 	i.refreshStatusCache()
 
 	targets := []string{cmd.Target}
+	i.changeDetected(targets, "source", "ctl:restart")
 	i.beforeCommand(targets, "build")
 
 	// Build (blocks — TUI reads cached "building" status during this)
@@ -213,6 +214,7 @@ func (i *IBazel) controlStart(cmd ControlCommand) {
 	i.refreshStatusCache()
 
 	targets := []string{cmd.Target}
+	i.changeDetected(targets, "source", "ctl:start")
 	i.beforeCommand(targets, "build")
 
 	outputBuffer, errBuild := i.build(cmd.Target)
@@ -278,6 +280,7 @@ func (i *IBazel) controlAdd(cmd ControlCommand) {
 	i.refreshStatusCache()
 
 	targets := []string{cmd.Target}
+	i.changeDetected(targets, "source", "ctl:add")
 	i.beforeCommand(targets, "build")
 
 	outputBuffer, errBuild := i.build(cmd.Target)
