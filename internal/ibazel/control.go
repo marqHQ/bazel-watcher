@@ -135,12 +135,12 @@ func (i *IBazel) controlRestart(cmd ControlCommand) {
 	i.refreshStatusCache()
 
 	targets := []string{cmd.Target}
-	i.beforeCommand(targets, "run")
+	i.beforeCommand(targets, "build")
 
 	// Build (blocks — TUI reads cached "building" status during this)
 	outputBuffer, errBuild := i.build(cmd.Target)
+	i.afterCommand(targets, "build", errBuild == nil, outputBuffer)
 	if errBuild != nil {
-		i.afterCommand(targets, "run", false, outputBuffer)
 		i.targetStates[cmd.Target] = &TargetState{
 			Target:    cmd.Target,
 			Status:    TargetErrored,
@@ -160,9 +160,10 @@ func (i *IBazel) controlRestart(cmd ControlCommand) {
 	i.logFiles[cmd.Target] = logFile
 	i.cmdsMu.Unlock()
 
+	i.beforeCommand(targets, "run")
 	startOutput, err := newCmd.Start(logFile)
+	i.afterCommand(targets, "run", err == nil, startOutput)
 	if err != nil {
-		i.afterCommand(targets, "run", false, startOutput)
 		i.targetStates[cmd.Target] = &TargetState{
 			Target:    cmd.Target,
 			Status:    TargetErrored,
@@ -173,7 +174,6 @@ func (i *IBazel) controlRestart(cmd ControlCommand) {
 		return
 	}
 
-	i.afterCommand(targets, "run", true, startOutput)
 	i.targetStates[cmd.Target] = &TargetState{
 		Target:    cmd.Target,
 		Status:    TargetRunning,
@@ -213,11 +213,11 @@ func (i *IBazel) controlStart(cmd ControlCommand) {
 	i.refreshStatusCache()
 
 	targets := []string{cmd.Target}
-	i.beforeCommand(targets, "run")
+	i.beforeCommand(targets, "build")
 
 	outputBuffer, errBuild := i.build(cmd.Target)
+	i.afterCommand(targets, "build", errBuild == nil, outputBuffer)
 	if errBuild != nil {
-		i.afterCommand(targets, "run", false, outputBuffer)
 		i.targetStates[cmd.Target] = &TargetState{
 			Target:    cmd.Target,
 			Status:    TargetErrored,
@@ -236,9 +236,10 @@ func (i *IBazel) controlStart(cmd ControlCommand) {
 	i.logFiles[cmd.Target] = logFile
 	i.cmdsMu.Unlock()
 
+	i.beforeCommand(targets, "run")
 	startOutput, err := newCmd.Start(logFile)
+	i.afterCommand(targets, "run", err == nil, startOutput)
 	if err != nil {
-		i.afterCommand(targets, "run", false, startOutput)
 		i.targetStates[cmd.Target] = &TargetState{
 			Target:    cmd.Target,
 			Status:    TargetErrored,
@@ -249,7 +250,6 @@ func (i *IBazel) controlStart(cmd ControlCommand) {
 		return
 	}
 
-	i.afterCommand(targets, "run", true, startOutput)
 	i.targetStates[cmd.Target] = &TargetState{
 		Target:    cmd.Target,
 		Status:    TargetRunning,
@@ -278,11 +278,11 @@ func (i *IBazel) controlAdd(cmd ControlCommand) {
 	i.refreshStatusCache()
 
 	targets := []string{cmd.Target}
-	i.beforeCommand(targets, "run")
+	i.beforeCommand(targets, "build")
 
 	outputBuffer, errBuild := i.build(cmd.Target)
+	i.afterCommand(targets, "build", errBuild == nil, outputBuffer)
 	if errBuild != nil {
-		i.afterCommand(targets, "run", false, outputBuffer)
 		i.targetStates[cmd.Target] = &TargetState{
 			Target:    cmd.Target,
 			Status:    TargetErrored,
@@ -307,9 +307,10 @@ func (i *IBazel) controlAdd(cmd ControlCommand) {
 	i.logFiles[cmd.Target] = logFile
 	i.cmdsMu.Unlock()
 
+	i.beforeCommand(targets, "run")
 	startOutput, err := newCmd.Start(logFile)
+	i.afterCommand(targets, "run", err == nil, startOutput)
 	if err != nil {
-		i.afterCommand(targets, "run", false, startOutput)
 		i.targetStates[cmd.Target] = &TargetState{
 			Target:    cmd.Target,
 			Status:    TargetErrored,
@@ -323,8 +324,6 @@ func (i *IBazel) controlAdd(cmd ControlCommand) {
 	// Set up file watches for the new target
 	i.watchManyFiles(sourceQuery, []string{cmd.Target}, i.sourceFileWatcher, &i.srcDirToWatch)
 	i.watchManyFiles(buildQuery, []string{cmd.Target}, i.buildFileWatcher, &i.bldDirToWatch)
-
-	i.afterCommand(targets, "run", true, startOutput)
 	i.targetStates[cmd.Target] = &TargetState{
 		Target:    cmd.Target,
 		Status:    TargetRunning,
