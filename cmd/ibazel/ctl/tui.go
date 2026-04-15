@@ -268,9 +268,8 @@ func (m tuiModel) View() string {
 	b.WriteString("  " + strings.Repeat("-", 70) + "\n")
 
 	// Calculate visible window — reserve lines for chrome around the list:
-	//   title(1) + blank(1) + error(0-2) + header(2) + blank(1) + status(0-1)
-	//   + input(0-1) + blank(1) + help(1) = ~8-10 fixed lines
-	const chromeLines = 10
+	//   title(1) + blank(1) + error(0-2) + header(2) + blank(1) + footer(1) = ~8 fixed lines
+	const chromeLines = 8
 	maxVisible := m.height - chromeLines
 	if maxVisible < 3 {
 		maxVisible = 3
@@ -323,27 +322,17 @@ func (m tuiModel) View() string {
 		b.WriteString("\n")
 	}
 
+	// Footer: status/input + help on a single separator line
 	b.WriteString("\n")
-
-	// Status message
-	if m.message != "" {
-		b.WriteString(statusBarStyle.Render(m.message))
-		b.WriteString("\n")
-	}
-
-	// Input lines
 	if m.filtering {
 		b.WriteString(fmt.Sprintf("Filter: %s_", m.filter))
-		b.WriteString("\n")
-	}
-	if m.adding {
+	} else if m.adding {
 		b.WriteString(fmt.Sprintf("Add target: %s_", m.addInput))
-		b.WriteString("\n")
+	} else if m.message != "" {
+		b.WriteString(statusBarStyle.Render(m.message))
+	} else {
+		b.WriteString(helpStyle.Render("r:restart  s:stop  x:start  a:add  d:remove  /:filter  q:quit"))
 	}
-
-	// Help
-	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("r:restart  s:stop  x:start  a:add  d:remove  /:filter  q:quit"))
 	b.WriteString("\n")
 
 	return b.String()
