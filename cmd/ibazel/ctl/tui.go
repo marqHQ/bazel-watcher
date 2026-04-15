@@ -291,18 +291,16 @@ func (m tuiModel) View() string {
 		}
 	}
 
-	// "more above" indicator
-	if viewStart > 0 {
-		b.WriteString(helpStyle.Render(fmt.Sprintf("  ▲ %d", viewStart)))
-		b.WriteString("\n")
-	}
-
-	// Target list
+	// Target list — overflow arrows shown in the left margin of first/last rows
 	for i := viewStart; i < viewEnd; i++ {
 		t := filtered[i]
-		cursor := "  "
+		margin := "  "
 		if i == m.cursor {
-			cursor = "> "
+			margin = "> "
+		} else if i == viewStart && viewStart > 0 {
+			margin = "▲ "
+		} else if i == viewEnd-1 && viewEnd < len(filtered) {
+			margin = "▼ "
 		}
 
 		statusStr := renderStatus(t.Status)
@@ -311,18 +309,12 @@ func (m tuiModel) View() string {
 			pidStr = fmt.Sprintf("%d", t.Pid)
 		}
 
-		line := fmt.Sprintf("%s%-50s  %s  %s", cursor, t.Target, statusStr, pidStr)
+		line := fmt.Sprintf("%s%-50s  %s  %s", margin, t.Target, statusStr, pidStr)
 		if i == m.cursor {
 			b.WriteString(selectedStyle.Render(line))
 		} else {
 			b.WriteString(line)
 		}
-		b.WriteString("\n")
-	}
-
-	// "more below" indicator
-	if viewEnd < len(filtered) {
-		b.WriteString(helpStyle.Render(fmt.Sprintf("  ▼ %d", len(filtered)-viewEnd)))
 		b.WriteString("\n")
 	}
 
