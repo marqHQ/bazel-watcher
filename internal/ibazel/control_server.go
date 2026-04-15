@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -426,7 +427,12 @@ func (i *IBazel) processHealthCheck() {
 			if !hasState || ts.Status != TargetRunning {
 				continue
 			}
-			if !c.IsSubprocessRunning() {
+			// Can't rely on IsSubprocessRunning — it checks cmd.ProcessState
+			// which is only set when Wait() returns, but Wait() blocks on
+			// pipe draining even after the process is dead. Check /proc
+			// directly instead.
+			pid := c.Pid()
+			if pid > 0 && !isProcAlive(pid) {
 				ts.Status = TargetStopped
 				changed = true
 			}
@@ -439,3 +445,18 @@ func (i *IBazel) processHealthCheck() {
 	}
 }
 
+// isProcAlive checks if a process exists and is not a zombie by reading
+// /proc/<pid>/status. This works even when cmd.Wait() is blocked on pipes.
+func isProcAlive(pid int) bool {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	if err != nil {
+		return false
+	}
+	// Check for zombie state
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "State:") {
+			return !strings.Contains(line, "Z (zombie)")
+		}
+	}
+	return false
+}
