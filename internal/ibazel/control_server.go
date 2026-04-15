@@ -419,12 +419,16 @@ func (i *IBazel) processHealthCheck() {
 		i.cmdsMu.RLock()
 		for _, target := range i.allTargets {
 			c, inCmds := i.cmds[target]
-			if inCmds && c != nil && !c.IsSubprocessRunning() {
-				ts, hasState := i.targetStates[target]
-				if hasState && ts.Status == TargetRunning {
-					ts.Status = TargetStopped
-					changed = true
-				}
+			if !inCmds || c == nil {
+				continue
+			}
+			ts, hasState := i.targetStates[target]
+			if !hasState || ts.Status != TargetRunning {
+				continue
+			}
+			if !c.IsSubprocessRunning() {
+				ts.Status = TargetStopped
+				changed = true
 			}
 		}
 		i.cmdsMu.RUnlock()
@@ -434,3 +438,4 @@ func (i *IBazel) processHealthCheck() {
 		}
 	}
 }
+

@@ -86,6 +86,8 @@ func (c *notifyCommand) Start(logFile *os.File) (*bytes.Buffer, error) {
 		log.Errorf("Error starting process: %v", err)
 		return outputBuffer, err
 	}
+	// Reap the child process when it exits to prevent zombies.
+	go c.pg.Wait()
 	log.Log("Starting...")
 	c.termSync = sync.Once{}
 	return outputBuffer, nil
