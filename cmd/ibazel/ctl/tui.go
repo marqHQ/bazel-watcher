@@ -245,10 +245,6 @@ func (m tuiModel) View() string {
 
 	var b strings.Builder
 
-	// Title
-	b.WriteString(titleStyle.Render("ibazel ctl"))
-	b.WriteString("\n\n")
-
 	if m.err != nil {
 		b.WriteString(erroredStyle.Render(fmt.Sprintf("Connection error: %v", m.err)))
 		b.WriteString("\n")
@@ -268,8 +264,8 @@ func (m tuiModel) View() string {
 	b.WriteString("  " + strings.Repeat("-", 70) + "\n")
 
 	// Calculate visible window — reserve lines for chrome around the list:
-	//   title(1) + blank(1) + error(0-2) + header(2) + blank(1) + footer(1) = ~8 fixed lines
-	const chromeLines = 8
+	//   header(2) + footer(1) = 3 fixed lines + error(0-2)
+	const chromeLines = 5
 	maxVisible := m.height - chromeLines
 	if maxVisible < 3 {
 		maxVisible = 3
@@ -323,7 +319,6 @@ func (m tuiModel) View() string {
 	}
 
 	// Footer: status/input + help on a single separator line
-	b.WriteString("\n")
 	if m.filtering {
 		b.WriteString(fmt.Sprintf("Filter: %s_", m.filter))
 	} else if m.adding {
@@ -333,7 +328,6 @@ func (m tuiModel) View() string {
 	} else {
 		b.WriteString(helpStyle.Render("r:restart  s:stop  x:start  a:add  d:remove  /:filter  q:quit"))
 	}
-	b.WriteString("\n")
 
 	return b.String()
 }

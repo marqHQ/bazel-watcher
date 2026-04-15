@@ -17,8 +17,8 @@ func TestTUI_InitialRender(t *testing.T) {
 	}
 
 	view := m.View()
-	if !strings.Contains(view, "ibazel ctl") {
-		t.Errorf("Expected title in view")
+	if !strings.Contains(view, "TARGET") {
+		t.Errorf("Expected header in view")
 	}
 	if !strings.Contains(view, "//svc1:svc1") {
 		t.Errorf("Expected svc1 in view")
