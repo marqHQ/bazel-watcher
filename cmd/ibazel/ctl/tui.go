@@ -267,8 +267,39 @@ func (m tuiModel) View() string {
 	b.WriteString(fmt.Sprintf("  %-50s  %-8s  %s\n", "TARGET", "STATUS", "PID"))
 	b.WriteString("  " + strings.Repeat("-", 70) + "\n")
 
+	// Calculate visible window — reserve lines for chrome around the list:
+	//   title(1) + blank(1) + error(0-2) + header(2) + blank(1) + status(0-1)
+	//   + input(0-1) + blank(1) + help(1) = ~8-10 fixed lines
+	const chromeLines = 10
+	maxVisible := m.height - chromeLines
+	if maxVisible < 3 {
+		maxVisible = 3
+	}
+
+	// Scroll window around cursor
+	viewStart := 0
+	viewEnd := len(filtered)
+	if len(filtered) > maxVisible {
+		viewStart = m.cursor - maxVisible/2
+		if viewStart < 0 {
+			viewStart = 0
+		}
+		viewEnd = viewStart + maxVisible
+		if viewEnd > len(filtered) {
+			viewEnd = len(filtered)
+			viewStart = viewEnd - maxVisible
+		}
+	}
+
+	// "more above" indicator
+	if viewStart > 0 {
+		b.WriteString(helpStyle.Render(fmt.Sprintf("  ▲ %d", viewStart)))
+		b.WriteString("\n")
+	}
+
 	// Target list
-	for i, t := range filtered {
+	for i := viewStart; i < viewEnd; i++ {
+		t := filtered[i]
 		cursor := "  "
 		if i == m.cursor {
 			cursor = "> "
@@ -280,14 +311,18 @@ func (m tuiModel) View() string {
 			pidStr = fmt.Sprintf("%d", t.Pid)
 		}
 
-		line := fmt.Sprintf("%s%-50s  %-8s  %s", cursor, t.Target, t.Status, pidStr)
+		line := fmt.Sprintf("%s%-50s  %s  %s", cursor, t.Target, statusStr, pidStr)
 		if i == m.cursor {
-			line = fmt.Sprintf("%s%-50s  %s  %s", cursor, t.Target, statusStr, pidStr)
 			b.WriteString(selectedStyle.Render(line))
 		} else {
-			line = fmt.Sprintf("%s%-50s  %s  %s", cursor, t.Target, statusStr, pidStr)
 			b.WriteString(line)
 		}
+		b.WriteString("\n")
+	}
+
+	// "more below" indicator
+	if viewEnd < len(filtered) {
+		b.WriteString(helpStyle.Render(fmt.Sprintf("  ▼ %d", len(filtered)-viewEnd)))
 		b.WriteString("\n")
 	}
 
