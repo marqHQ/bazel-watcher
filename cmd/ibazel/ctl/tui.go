@@ -32,6 +32,8 @@ type tuiModel struct {
 	cursor    int
 	filter    string
 	filtering bool
+	adding    bool
+	addInput  string
 	message   string
 	msgExpiry time.Time
 	err       error
@@ -109,6 +111,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.filtering {
 			return m.handleFilterKey(msg)
 		}
+		if m.adding {
+			return m.handleAddKey(msg)
+		}
 		return m.handleNormalKey(msg)
 	}
 
@@ -132,6 +137,35 @@ func (m tuiModel) handleFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	default:
 		if len(msg.String()) == 1 {
 			m.filter += msg.String()
+		}
+		return m, nil
+	}
+}
+
+func (m tuiModel) handleAddKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.adding = false
+		m.addInput = ""
+		return m, nil
+	case "enter":
+		target := m.addInput
+		m.adding = false
+		m.addInput = ""
+		if target == "" {
+			return m, nil
+		}
+		m.message = fmt.Sprintf("Adding %s...", target)
+		m.msgExpiry = time.Time{}
+		return m, doAction(m.serverURL, "add", target)
+	case "backspace":
+		if len(m.addInput) > 0 {
+			m.addInput = m.addInput[:len(m.addInput)-1]
+		}
+		return m, nil
+	default:
+		if len(msg.String()) == 1 {
+			m.addInput += msg.String()
 		}
 		return m, nil
 	}
@@ -180,6 +214,9 @@ func (m tuiModel) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.msgExpiry = time.Time{}
 			return m, doAction(m.serverURL, "remove", t)
 		}
+	case "a":
+		m.adding = true
+		m.addInput = ""
 	case "/":
 		m.filtering = true
 		m.filter = ""
@@ -267,15 +304,19 @@ func (m tuiModel) View() string {
 		b.WriteString("\n")
 	}
 
-	// Filter line
+	// Input lines
 	if m.filtering {
 		b.WriteString(fmt.Sprintf("Filter: %s_", m.filter))
+		b.WriteString("\n")
+	}
+	if m.adding {
+		b.WriteString(fmt.Sprintf("Add target: %s_", m.addInput))
 		b.WriteString("\n")
 	}
 
 	// Help
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("r:restart  s:stop  x:start  d:remove  /:filter  q:quit"))
+	b.WriteString(helpStyle.Render("r:restart  s:stop  x:start  a:add  d:remove  /:filter  q:quit"))
 	b.WriteString("\n")
 
 	return b.String()
