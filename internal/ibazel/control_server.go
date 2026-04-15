@@ -38,10 +38,12 @@ var (
 	controlSessionDir  string
 	controlSessionFile string
 
-	// statusCache holds the last successful /api/status response so we can
-	// serve it immediately when the main loop is busy (e.g. during builds).
+	// Read-only caches — updated by the builder, served by the HTTP handlers.
+	// This decouples reads from the main build loop so they never block.
 	statusCacheMu sync.RWMutex
 	statusCache   []byte
+	listCacheMu   sync.RWMutex
+	listCache     []byte
 )
 
 func (i *IBazel) startControlServer() {
@@ -206,32 +208,17 @@ func (i *IBazel) handleHTTPStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := i.sendControlCommand(ControlCommand{
-		Action: ActionStatus,
-	})
-
-	w.Header().Set("Content-Type", "application/json")
-
-	if resp != nil {
-		// Cache the fresh response for use when the main loop is busy.
-		data, _ := json.Marshal(resp.Data)
-		statusCacheMu.Lock()
-		statusCache = data
-		statusCacheMu.Unlock()
-		w.Write(data)
-		return
-	}
-
-	// Main loop is busy (building/querying) — serve the last-known status.
 	statusCacheMu.RLock()
 	cached := statusCache
 	statusCacheMu.RUnlock()
-	if cached != nil {
-		w.Write(cached)
+
+	if cached == nil {
+		http.Error(w, `{"error":"server starting up"}`, http.StatusServiceUnavailable)
 		return
 	}
 
-	http.Error(w, `{"error":"build in progress, try again shortly"}`, http.StatusServiceUnavailable)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(cached)
 }
 
 func (i *IBazel) handleHTTPList(w http.ResponseWriter, r *http.Request) {
@@ -240,16 +227,17 @@ func (i *IBazel) handleHTTPList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := i.sendControlCommand(ControlCommand{
-		Action: ActionList,
-	})
-	if resp == nil {
-		http.Error(w, `{"error":"build in progress, try again shortly"}`, http.StatusServiceUnavailable)
+	listCacheMu.RLock()
+	cached := listCache
+	listCacheMu.RUnlock()
+
+	if cached == nil {
+		http.Error(w, `{"error":"server starting up"}`, http.StatusServiceUnavailable)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp.Data)
+	w.Write(cached)
 }
 
 func (i *IBazel) handleHTTPAction(action ControlAction) http.HandlerFunc {
@@ -360,7 +348,7 @@ func (i *IBazel) sendControlCommand(cmd ControlCommand) *ControlResponse {
 }
 
 // refreshStatusCache snapshots the current target statuses into the cache so
-// the HTTP handler can serve them when the main loop is busy.
+// the HTTP handlers always serve instantly without blocking on the main loop.
 func (i *IBazel) refreshStatusCache() {
 	statuses := make([]TargetStatusInfo, 0, len(i.allTargets))
 	for _, target := range i.allTargets {
@@ -382,9 +370,21 @@ func (i *IBazel) refreshStatusCache() {
 	statusCacheMu.Lock()
 	statusCache = data
 	statusCacheMu.Unlock()
+
+	i.refreshListCache()
 }
 
-// primeStatusCache seeds the status cache with "building" for all targets so
+// refreshListCache updates the cached target list.
+func (i *IBazel) refreshListCache() {
+	targets := make([]string, len(i.allTargets))
+	copy(targets, i.allTargets)
+	data, _ := json.Marshal(targets)
+	listCacheMu.Lock()
+	listCache = data
+	listCacheMu.Unlock()
+}
+
+// primeStatusCache seeds the caches with "building" for all targets so
 // that ibazel ctl can display them immediately during the initial build.
 func (i *IBazel) primeStatusCache() {
 	statuses := make([]TargetStatusInfo, len(i.allTargets))
@@ -398,4 +398,6 @@ func (i *IBazel) primeStatusCache() {
 	statusCacheMu.Lock()
 	statusCache = data
 	statusCacheMu.Unlock()
+
+	i.refreshListCache()
 }

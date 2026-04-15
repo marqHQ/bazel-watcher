@@ -44,6 +44,7 @@ func TestControlServer_StatusEndpoint(t *testing.T) {
 	cmd2.started = true
 	i.cmds["//svc1"] = cmd1
 	i.cmds["//svc2"] = cmd2
+	i.refreshStatusCache()
 
 	handler := http.HandlerFunc(i.handleHTTPStatus)
 	req := httptest.NewRequest("GET", "/api/status", nil)
@@ -69,6 +70,7 @@ func TestControlServer_ListEndpoint(t *testing.T) {
 	defer i.Cleanup()
 
 	i.allTargets = []string{"//svc1", "//svc2", "//svc3"}
+	i.refreshListCache()
 
 	handler := http.HandlerFunc(i.handleHTTPList)
 	req := httptest.NewRequest("GET", "/api/list", nil)
@@ -324,7 +326,7 @@ func TestControlServer_AddEndpoint(t *testing.T) {
 	}
 }
 
-func TestControlServer_StatusCacheFallback(t *testing.T) {
+func TestControlServer_StatusServesFromCache(t *testing.T) {
 	log.SetTesting(t)
 
 	// Clear any cached status from prior tests.
@@ -335,65 +337,41 @@ func TestControlServer_StatusCacheFallback(t *testing.T) {
 	i, _ := newControlTestIBazel(t)
 	defer i.Cleanup()
 	i.allTargets = []string{"//svc1"}
-	handler := http.HandlerFunc(i.handleHTTPStatus)
+	i.refreshStatusCache()
 
-	// Prime the cache: drain one command so the request succeeds.
-	done := make(chan struct{})
-	go func() {
-		cmd := <-i.controlCh
-		i.handleControlCommand(cmd)
-		close(done)
-	}()
+	handler := http.HandlerFunc(i.handleHTTPStatus)
 	req := httptest.NewRequest("GET", "/api/status", nil)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
-	<-done
 	if rr.Code != http.StatusOK {
-		t.Fatalf("Expected 200 to prime cache, got %d: %s", rr.Code, rr.Body.String())
-	}
-
-	// Now shorten the timeout and stop draining — simulates a busy main loop.
-	origTimeout := controlTimeout
-	controlTimeout = 100 * time.Millisecond
-	t.Cleanup(func() { controlTimeout = origTimeout })
-
-	req = httptest.NewRequest("GET", "/api/status", nil)
-	rr = httptest.NewRecorder()
-	handler.ServeHTTP(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("Expected 200 from cache fallback, got %d: %s", rr.Code, rr.Body.String())
+		t.Fatalf("Expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
 
 	var statuses []TargetStatusInfo
 	if err := json.NewDecoder(rr.Body).Decode(&statuses); err != nil {
-		t.Fatalf("Error decoding cached response: %v", err)
+		t.Fatalf("Error decoding response: %v", err)
 	}
 	if len(statuses) != 1 || statuses[0].Target != "//svc1" {
-		t.Errorf("Unexpected cached statuses: %+v", statuses)
+		t.Errorf("Unexpected statuses: %+v", statuses)
 	}
 }
 
 func TestControlServer_StatusNoCacheReturns503(t *testing.T) {
 	log.SetTesting(t)
 
-	// Clear cache, shorten timeout.
 	statusCacheMu.Lock()
 	statusCache = nil
 	statusCacheMu.Unlock()
-	origTimeout := controlTimeout
-	controlTimeout = 100 * time.Millisecond
-	t.Cleanup(func() { controlTimeout = origTimeout })
 
 	i, _ := newControlTestIBazel(t)
 	defer i.Cleanup()
-	i.allTargets = []string{"//svc1"}
 
 	handler := http.HandlerFunc(i.handleHTTPStatus)
 	req := httptest.NewRequest("GET", "/api/status", nil)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusServiceUnavailable {
-		t.Fatalf("Expected 503 with no cache and busy loop, got %d", rr.Code)
+		t.Fatalf("Expected 503 with no cache, got %d", rr.Code)
 	}
 }
 

@@ -16,8 +16,6 @@ const (
 	ActionStart
 	ActionAdd
 	ActionRemove
-	ActionStatus
-	ActionList
 )
 
 type ControlCommand struct {
@@ -56,10 +54,6 @@ type TargetStatusInfo struct {
 
 func (i *IBazel) handleControlCommand(cmd ControlCommand) {
 	switch cmd.Action {
-	case ActionStatus:
-		i.controlStatus(cmd)
-	case ActionList:
-		i.controlList(cmd)
 	case ActionStop:
 		i.controlStop(cmd)
 	case ActionRestart:
@@ -73,32 +67,6 @@ func (i *IBazel) handleControlCommand(cmd ControlCommand) {
 	default:
 		cmd.Response <- ControlResponse{Success: false, Message: "unknown action"}
 	}
-}
-
-func (i *IBazel) controlStatus(cmd ControlCommand) {
-	statuses := make([]TargetStatusInfo, 0, len(i.allTargets))
-	for _, target := range i.allTargets {
-		info := TargetStatusInfo{Target: target}
-		i.cmdsMu.RLock()
-		c, inCmds := i.cmds[target]
-		i.cmdsMu.RUnlock()
-		if inCmds && c != nil && c.IsSubprocessRunning() {
-			info.Status = TargetRunning
-			info.Pid = c.Pid()
-		} else if ts, ok := i.targetStates[target]; ok {
-			info.Status = ts.Status
-		} else {
-			info.Status = TargetStopped
-		}
-		statuses = append(statuses, info)
-	}
-	cmd.Response <- ControlResponse{Success: true, Data: statuses}
-}
-
-func (i *IBazel) controlList(cmd ControlCommand) {
-	targets := make([]string, len(i.allTargets))
-	copy(targets, i.allTargets)
-	cmd.Response <- ControlResponse{Success: true, Data: targets}
 }
 
 func (i *IBazel) controlStop(cmd ControlCommand) {
@@ -128,6 +96,7 @@ func (i *IBazel) controlStop(cmd ControlCommand) {
 		Target: cmd.Target,
 		Status: TargetStopped,
 	}
+	i.refreshStatusCache()
 
 	log.Logf("[ctl] Stopped %s", cmd.Target)
 	cmd.Response <- ControlResponse{Success: true, Message: fmt.Sprintf("stopped %s", cmd.Target)}
@@ -173,6 +142,7 @@ func (i *IBazel) controlRestart(cmd ControlCommand) {
 			Status:    TargetErrored,
 			DebugArgs: debugArg,
 		}
+		i.refreshStatusCache()
 		cmd.Response <- ControlResponse{Success: false, Message: fmt.Sprintf("build failed for %s: %v", cmd.Target, errBuild)}
 		return
 	}
@@ -193,6 +163,7 @@ func (i *IBazel) controlRestart(cmd ControlCommand) {
 			Status:    TargetErrored,
 			DebugArgs: debugArg,
 		}
+		i.refreshStatusCache()
 		cmd.Response <- ControlResponse{Success: false, Message: fmt.Sprintf("start failed for %s: %v", cmd.Target, err)}
 		return
 	}
@@ -202,6 +173,7 @@ func (i *IBazel) controlRestart(cmd ControlCommand) {
 		Status:    TargetRunning,
 		DebugArgs: debugArg,
 	}
+	i.refreshStatusCache()
 
 	log.Logf("[ctl] Restarted %s", cmd.Target)
 	cmd.Response <- ControlResponse{Success: true, Message: fmt.Sprintf("restarted %s", cmd.Target)}
@@ -241,6 +213,7 @@ func (i *IBazel) controlStart(cmd ControlCommand) {
 			Status:    TargetErrored,
 			DebugArgs: debugArg,
 		}
+		i.refreshStatusCache()
 		cmd.Response <- ControlResponse{Success: false, Message: fmt.Sprintf("build failed for %s: %v", cmd.Target, errBuild)}
 		return
 	}
@@ -260,6 +233,7 @@ func (i *IBazel) controlStart(cmd ControlCommand) {
 			Status:    TargetErrored,
 			DebugArgs: debugArg,
 		}
+		i.refreshStatusCache()
 		cmd.Response <- ControlResponse{Success: false, Message: fmt.Sprintf("start failed for %s: %v", cmd.Target, err)}
 		return
 	}
@@ -269,6 +243,7 @@ func (i *IBazel) controlStart(cmd ControlCommand) {
 		Status:    TargetRunning,
 		DebugArgs: debugArg,
 	}
+	i.refreshStatusCache()
 
 	log.Logf("[ctl] Started %s", cmd.Target)
 	cmd.Response <- ControlResponse{Success: true, Message: fmt.Sprintf("started %s", cmd.Target)}
@@ -297,6 +272,7 @@ func (i *IBazel) controlAdd(cmd ControlCommand) {
 			Status:    TargetErrored,
 			DebugArgs: cmd.Args,
 		}
+		i.refreshStatusCache()
 		cmd.Response <- ControlResponse{Success: false, Message: fmt.Sprintf("build failed for %s: %v", cmd.Target, errBuild)}
 		return
 	}
@@ -322,6 +298,7 @@ func (i *IBazel) controlAdd(cmd ControlCommand) {
 			Status:    TargetErrored,
 			DebugArgs: cmd.Args,
 		}
+		i.refreshStatusCache()
 		cmd.Response <- ControlResponse{Success: false, Message: fmt.Sprintf("start failed for %s: %v", cmd.Target, err)}
 		return
 	}
@@ -335,6 +312,7 @@ func (i *IBazel) controlAdd(cmd ControlCommand) {
 		Status:    TargetRunning,
 		DebugArgs: cmd.Args,
 	}
+	i.refreshStatusCache()
 
 	log.Logf("[ctl] Added %s", cmd.Target)
 	cmd.Response <- ControlResponse{Success: true, Message: fmt.Sprintf("added %s", cmd.Target)}
@@ -384,6 +362,8 @@ func (i *IBazel) controlRemove(cmd ControlCommand) {
 			}
 		}
 	}
+
+	i.refreshStatusCache()
 
 	log.Logf("[ctl] Removed %s", cmd.Target)
 	cmd.Response <- ControlResponse{Success: true, Message: fmt.Sprintf("removed %s", cmd.Target)}

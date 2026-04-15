@@ -550,6 +550,7 @@ func (i *IBazel) iterationMultiple(commandString string, commandToRun runnableCo
 		}
 		i.prevDir = ""
 		i.state = WAIT
+		i.refreshStatusCache()
 	}
 }
 

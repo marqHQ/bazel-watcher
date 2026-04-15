@@ -2,6 +2,7 @@ package ibazel
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"sync"
 	"syscall"
@@ -204,6 +205,7 @@ func TestSetupRun_DifferentTargetsIndependent(t *testing.T) {
 }
 
 // Phase 1: Status and List tests
+// Status and list are served from cache, updated by refreshStatusCache().
 
 func TestControlStatus_AllRunning(t *testing.T) {
 	log.SetTesting(t)
@@ -218,15 +220,16 @@ func TestControlStatus_AllRunning(t *testing.T) {
 	i.cmds["//svc1"] = cmd1
 	i.cmds["//svc2"] = cmd2
 
-	resp := make(chan ControlResponse, 1)
-	i.handleControlCommand(ControlCommand{Action: ActionStatus, Response: resp})
-	r := <-resp
+	i.refreshStatusCache()
 
-	if !r.Success {
-		t.Fatalf("Expected success")
+	statusCacheMu.RLock()
+	cached := statusCache
+	statusCacheMu.RUnlock()
+
+	var statuses []TargetStatusInfo
+	if err := json.Unmarshal(cached, &statuses); err != nil {
+		t.Fatalf("Error unmarshaling cache: %v", err)
 	}
-
-	statuses := r.Data.([]TargetStatusInfo)
 	if len(statuses) != 2 {
 		t.Fatalf("Expected 2 statuses, got %d", len(statuses))
 	}
@@ -248,11 +251,14 @@ func TestControlStatus_MixedStates(t *testing.T) {
 	i.cmds["//svc1"] = cmd1
 	i.targetStates["//svc2"] = &TargetState{Target: "//svc2", Status: TargetStopped}
 
-	resp := make(chan ControlResponse, 1)
-	i.handleControlCommand(ControlCommand{Action: ActionStatus, Response: resp})
-	r := <-resp
+	i.refreshStatusCache()
 
-	statuses := r.Data.([]TargetStatusInfo)
+	statusCacheMu.RLock()
+	cached := statusCache
+	statusCacheMu.RUnlock()
+
+	var statuses []TargetStatusInfo
+	json.Unmarshal(cached, &statuses)
 	if statuses[0].Status != TargetRunning {
 		t.Errorf("svc1: expected running, got %s", statuses[0].Status)
 	}
@@ -266,14 +272,14 @@ func TestControlStatus_Empty(t *testing.T) {
 	i, _ := newControlTestIBazel(t)
 	defer i.Cleanup()
 
-	resp := make(chan ControlResponse, 1)
-	i.handleControlCommand(ControlCommand{Action: ActionStatus, Response: resp})
-	r := <-resp
+	i.refreshStatusCache()
 
-	if !r.Success {
-		t.Fatalf("Expected success")
-	}
-	statuses := r.Data.([]TargetStatusInfo)
+	statusCacheMu.RLock()
+	cached := statusCache
+	statusCacheMu.RUnlock()
+
+	var statuses []TargetStatusInfo
+	json.Unmarshal(cached, &statuses)
 	if len(statuses) != 0 {
 		t.Errorf("Expected 0 statuses, got %d", len(statuses))
 	}
@@ -286,14 +292,14 @@ func TestControlList(t *testing.T) {
 
 	i.allTargets = []string{"//a", "//b", "//c"}
 
-	resp := make(chan ControlResponse, 1)
-	i.handleControlCommand(ControlCommand{Action: ActionList, Response: resp})
-	r := <-resp
+	i.refreshListCache()
 
-	if !r.Success {
-		t.Fatalf("Expected success")
-	}
-	targets := r.Data.([]string)
+	listCacheMu.RLock()
+	cached := listCache
+	listCacheMu.RUnlock()
+
+	var targets []string
+	json.Unmarshal(cached, &targets)
 	if len(targets) != 3 {
 		t.Fatalf("Expected 3 targets, got %d", len(targets))
 	}
@@ -554,15 +560,20 @@ func TestControlCommand_InWaitState(t *testing.T) {
 	defer i.Cleanup()
 
 	i.allTargets = []string{"//svc1"}
+	cmd := newMockCommand()
+	cmd.started = true
+	cmd.doTermChan <- struct{}{}
+	i.cmds["//svc1"] = cmd
+	i.targetStates["//svc1"] = &TargetState{Target: "//svc1", Status: TargetRunning}
 	i.state = WAIT
 
-	// Send a status command through controlCh
+	// Send a stop command through controlCh
 	resp := make(chan ControlResponse, 1)
 	go func() {
-		i.controlCh <- ControlCommand{Action: ActionStatus, Response: resp}
+		i.controlCh <- ControlCommand{Action: ActionStop, Target: "//svc1", Response: resp}
 	}()
 
-	// Step through iterationMultiple
+	// Step through iterationMultiple — the WAIT select should pick up the command
 	dummyCmd := func(targets []string, debugArgs [][]string, argsLength int) ([]*bytes.Buffer, error) {
 		return nil, nil
 	}
@@ -570,7 +581,7 @@ func TestControlCommand_InWaitState(t *testing.T) {
 
 	r := <-resp
 	if !r.Success {
-		t.Errorf("Expected status command to succeed")
+		t.Errorf("Expected stop command to succeed")
 	}
 	if i.state != WAIT {
 		t.Errorf("Expected state to remain WAIT, got %s", i.state)
