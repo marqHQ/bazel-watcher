@@ -17,6 +17,11 @@ func newHTTPTestIBazel(t *testing.T) *IBazel {
 	t.Helper()
 	i, _ := newControlTestIBazel(t)
 
+	// Clear cached status from prior tests.
+	statusCacheMu.Lock()
+	statusCache = nil
+	statusCacheMu.Unlock()
+
 	// Start a goroutine to drain controlCh and handle commands
 	go func() {
 		for cmd := range i.controlCh {
@@ -316,6 +321,79 @@ func TestControlServer_AddEndpoint(t *testing.T) {
 
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("Expected 400 for duplicate target, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestControlServer_StatusCacheFallback(t *testing.T) {
+	log.SetTesting(t)
+
+	// Clear any cached status from prior tests.
+	statusCacheMu.Lock()
+	statusCache = nil
+	statusCacheMu.Unlock()
+
+	i, _ := newControlTestIBazel(t)
+	defer i.Cleanup()
+	i.allTargets = []string{"//svc1"}
+	handler := http.HandlerFunc(i.handleHTTPStatus)
+
+	// Prime the cache: drain one command so the request succeeds.
+	done := make(chan struct{})
+	go func() {
+		cmd := <-i.controlCh
+		i.handleControlCommand(cmd)
+		close(done)
+	}()
+	req := httptest.NewRequest("GET", "/api/status", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	<-done
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected 200 to prime cache, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Now shorten the timeout and stop draining — simulates a busy main loop.
+	origTimeout := controlTimeout
+	controlTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { controlTimeout = origTimeout })
+
+	req = httptest.NewRequest("GET", "/api/status", nil)
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected 200 from cache fallback, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var statuses []TargetStatusInfo
+	if err := json.NewDecoder(rr.Body).Decode(&statuses); err != nil {
+		t.Fatalf("Error decoding cached response: %v", err)
+	}
+	if len(statuses) != 1 || statuses[0].Target != "//svc1" {
+		t.Errorf("Unexpected cached statuses: %+v", statuses)
+	}
+}
+
+func TestControlServer_StatusNoCacheReturns503(t *testing.T) {
+	log.SetTesting(t)
+
+	// Clear cache, shorten timeout.
+	statusCacheMu.Lock()
+	statusCache = nil
+	statusCacheMu.Unlock()
+	origTimeout := controlTimeout
+	controlTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { controlTimeout = origTimeout })
+
+	i, _ := newControlTestIBazel(t)
+	defer i.Cleanup()
+	i.allTargets = []string{"//svc1"}
+
+	handler := http.HandlerFunc(i.handleHTTPStatus)
+	req := httptest.NewRequest("GET", "/api/status", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("Expected 503 with no cache and busy loop, got %d", rr.Code)
 	}
 }
 

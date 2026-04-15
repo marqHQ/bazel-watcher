@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -16,10 +17,13 @@ import (
 )
 
 const (
-	controlPortStart uint16 = 31000
-	controlPortEnd   uint16 = 31100
-	controlTimeout          = 30 * time.Second
+	controlPortStart      uint16 = 31000
+	controlPortEnd        uint16 = 31100
+	controlTimeoutDefault        = 30 * time.Second
 )
+
+// controlTimeout is a variable so tests can shorten it.
+var controlTimeout = controlTimeoutDefault
 
 type sessionInfo struct {
 	Port      int      `json:"port"`
@@ -30,9 +34,14 @@ type sessionInfo struct {
 }
 
 var (
-	controlServer     *http.Server
-	controlSessionDir string
+	controlServer      *http.Server
+	controlSessionDir  string
 	controlSessionFile string
+
+	// statusCache holds the last successful /api/status response so we can
+	// serve it immediately when the main loop is busy (e.g. during builds).
+	statusCacheMu sync.RWMutex
+	statusCache   []byte
 )
 
 func (i *IBazel) startControlServer() {
@@ -196,13 +205,29 @@ func (i *IBazel) handleHTTPStatus(w http.ResponseWriter, r *http.Request) {
 	resp := i.sendControlCommand(ControlCommand{
 		Action: ActionStatus,
 	})
-	if resp == nil {
-		http.Error(w, `{"error":"build in progress, try again shortly"}`, http.StatusServiceUnavailable)
+
+	w.Header().Set("Content-Type", "application/json")
+
+	if resp != nil {
+		// Cache the fresh response for use when the main loop is busy.
+		data, _ := json.Marshal(resp.Data)
+		statusCacheMu.Lock()
+		statusCache = data
+		statusCacheMu.Unlock()
+		w.Write(data)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp.Data)
+	// Main loop is busy (building/querying) — serve the last-known status.
+	statusCacheMu.RLock()
+	cached := statusCache
+	statusCacheMu.RUnlock()
+	if cached != nil {
+		w.Write(cached)
+		return
+	}
+
+	http.Error(w, `{"error":"build in progress, try again shortly"}`, http.StatusServiceUnavailable)
 }
 
 func (i *IBazel) handleHTTPList(w http.ResponseWriter, r *http.Request) {
