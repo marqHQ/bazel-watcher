@@ -18,6 +18,7 @@ const pollInterval = 2 * time.Second
 var (
 	titleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
 	selectedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("27"))
+	buildingStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 	runningStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
 	stoppedStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 	erroredStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("208"))
@@ -282,6 +283,8 @@ func (m tuiModel) View() string {
 
 func renderStatus(status string) string {
 	switch status {
+	case "building":
+		return buildingStyle.Render("building")
 	case "running":
 		return runningStyle.Render("running")
 	case "stopped":

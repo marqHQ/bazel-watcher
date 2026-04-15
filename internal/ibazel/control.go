@@ -36,9 +36,10 @@ type ControlResponse struct {
 type TargetStatus string
 
 const (
-	TargetRunning TargetStatus = "running"
-	TargetStopped TargetStatus = "stopped"
-	TargetErrored TargetStatus = "errored"
+	TargetBuilding TargetStatus = "building"
+	TargetRunning  TargetStatus = "running"
+	TargetStopped  TargetStatus = "stopped"
+	TargetErrored  TargetStatus = "errored"
 )
 
 type TargetState struct {
@@ -157,7 +158,14 @@ func (i *IBazel) controlRestart(cmd ControlCommand) {
 		debugArg = i.allDebugArgs[idx]
 	}
 
-	// Build
+	i.targetStates[cmd.Target] = &TargetState{
+		Target:    cmd.Target,
+		Status:    TargetBuilding,
+		DebugArgs: debugArg,
+	}
+	i.refreshStatusCache()
+
+	// Build (blocks — TUI reads cached "building" status during this)
 	_, errBuild := i.build(cmd.Target)
 	if errBuild != nil {
 		i.targetStates[cmd.Target] = &TargetState{
@@ -219,6 +227,13 @@ func (i *IBazel) controlStart(cmd ControlCommand) {
 		debugArg = i.allDebugArgs[idx]
 	}
 
+	i.targetStates[cmd.Target] = &TargetState{
+		Target:    cmd.Target,
+		Status:    TargetBuilding,
+		DebugArgs: debugArg,
+	}
+	i.refreshStatusCache()
+
 	_, errBuild := i.build(cmd.Target)
 	if errBuild != nil {
 		i.targetStates[cmd.Target] = &TargetState{
@@ -267,6 +282,13 @@ func (i *IBazel) controlAdd(cmd ControlCommand) {
 
 	i.allTargets = append(i.allTargets, cmd.Target)
 	i.allDebugArgs = append(i.allDebugArgs, cmd.Args)
+
+	i.targetStates[cmd.Target] = &TargetState{
+		Target:    cmd.Target,
+		Status:    TargetBuilding,
+		DebugArgs: cmd.Args,
+	}
+	i.refreshStatusCache()
 
 	_, errBuild := i.build(cmd.Target)
 	if errBuild != nil {

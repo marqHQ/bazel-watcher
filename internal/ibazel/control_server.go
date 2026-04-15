@@ -78,6 +78,10 @@ func (i *IBazel) startControlServer() {
 		}
 	}()
 
+	// Prime the status cache so ctl can show targets immediately during
+	// the initial build, before the main loop reaches the WAIT state.
+	i.primeStatusCache()
+
 	url := fmt.Sprintf("http://127.0.0.1:%d", port)
 	os.Setenv("IBAZEL_CONTROL_URL", url)
 
@@ -353,4 +357,45 @@ func (i *IBazel) sendControlCommand(cmd ControlCommand) *ControlResponse {
 	case <-ctx.Done():
 		return nil
 	}
+}
+
+// refreshStatusCache snapshots the current target statuses into the cache so
+// the HTTP handler can serve them when the main loop is busy.
+func (i *IBazel) refreshStatusCache() {
+	statuses := make([]TargetStatusInfo, 0, len(i.allTargets))
+	for _, target := range i.allTargets {
+		info := TargetStatusInfo{Target: target}
+		i.cmdsMu.RLock()
+		c, inCmds := i.cmds[target]
+		i.cmdsMu.RUnlock()
+		if inCmds && c != nil && c.IsSubprocessRunning() {
+			info.Status = TargetRunning
+			info.Pid = c.Pid()
+		} else if ts, ok := i.targetStates[target]; ok {
+			info.Status = ts.Status
+		} else {
+			info.Status = TargetStopped
+		}
+		statuses = append(statuses, info)
+	}
+	data, _ := json.Marshal(statuses)
+	statusCacheMu.Lock()
+	statusCache = data
+	statusCacheMu.Unlock()
+}
+
+// primeStatusCache seeds the status cache with "building" for all targets so
+// that ibazel ctl can display them immediately during the initial build.
+func (i *IBazel) primeStatusCache() {
+	statuses := make([]TargetStatusInfo, len(i.allTargets))
+	for idx, target := range i.allTargets {
+		statuses[idx] = TargetStatusInfo{
+			Target: target,
+			Status: TargetBuilding,
+		}
+	}
+	data, _ := json.Marshal(statuses)
+	statusCacheMu.Lock()
+	statusCache = data
+	statusCacheMu.Unlock()
 }
