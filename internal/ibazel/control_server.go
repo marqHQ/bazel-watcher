@@ -361,9 +361,13 @@ func (i *IBazel) refreshStatusCache() {
 		i.cmdsMu.RLock()
 		c, inCmds := i.cmds[target]
 		i.cmdsMu.RUnlock()
-		if inCmds && c != nil && c.IsSubprocessRunning() {
+		pid := 0
+		if inCmds && c != nil {
+			pid = c.Pid()
+		}
+		if inCmds && c != nil && c.IsSubprocessRunning() && (pid <= 0 || isProcAlive(pid)) {
 			info.Status = TargetRunning
-			info.Pid = c.Pid()
+			info.Pid = pid
 		} else if ts, ok := i.targetStates[target]; ok {
 			info.Status = ts.Status
 		} else {
@@ -423,17 +427,23 @@ func (i *IBazel) processHealthCheck() {
 			if !inCmds || c == nil {
 				continue
 			}
-			ts, hasState := i.targetStates[target]
-			if !hasState || ts.Status != TargetRunning {
+			pid := c.Pid()
+			if pid <= 0 {
 				continue
 			}
 			// Can't rely on IsSubprocessRunning — it checks cmd.ProcessState
 			// which is only set when Wait() returns, but Wait() blocks on
 			// pipe draining even after the process is dead. Check /proc
 			// directly instead.
-			pid := c.Pid()
-			if pid > 0 && !isProcAlive(pid) {
-				ts.Status = TargetStopped
+			if !isProcAlive(pid) {
+				if ts, ok := i.targetStates[target]; ok {
+					ts.Status = TargetStopped
+				} else {
+					i.targetStates[target] = &TargetState{
+						Target: target,
+						Status: TargetStopped,
+					}
+				}
 				changed = true
 			}
 		}
