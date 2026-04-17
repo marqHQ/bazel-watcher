@@ -1,0 +1,392 @@
+package ibazel
+
+import (
+	"fmt"
+	"os"
+
+	"github.com/bazelbuild/bazel-watcher/internal/ibazel/command"
+	"github.com/bazelbuild/bazel-watcher/internal/ibazel/log"
+)
+
+type ControlAction int
+
+const (
+	ActionRestart ControlAction = iota
+	ActionStop
+	ActionStart
+	ActionAdd
+	ActionRemove
+)
+
+type ControlCommand struct {
+	Action   ControlAction
+	Target   string
+	Args     []string
+	Response chan ControlResponse
+}
+
+type ControlResponse struct {
+	Success bool
+	Message string
+	Data    interface{}
+}
+
+type TargetStatus string
+
+const (
+	TargetBuilding TargetStatus = "building"
+	TargetRunning  TargetStatus = "running"
+	TargetStopped  TargetStatus = "stopped"
+	TargetErrored  TargetStatus = "errored"
+)
+
+type TargetState struct {
+	Target    string
+	Status    TargetStatus
+	DebugArgs []string
+}
+
+type TargetStatusInfo struct {
+	Target string       `json:"target"`
+	Status TargetStatus `json:"status"`
+	Pid    int          `json:"pid"`
+}
+
+func (i *IBazel) handleControlCommand(cmd ControlCommand) {
+	switch cmd.Action {
+	case ActionStop:
+		i.controlStop(cmd)
+	case ActionRestart:
+		i.controlRestart(cmd)
+	case ActionStart:
+		i.controlStart(cmd)
+	case ActionAdd:
+		i.controlAdd(cmd)
+	case ActionRemove:
+		i.controlRemove(cmd)
+	default:
+		cmd.Response <- ControlResponse{Success: false, Message: "unknown action"}
+	}
+}
+
+func (i *IBazel) controlStop(cmd ControlCommand) {
+	idx := containsIdx(i.allTargets, cmd.Target)
+	if idx == -1 {
+		cmd.Response <- ControlResponse{Success: false, Message: fmt.Sprintf("unknown target: %s", cmd.Target)}
+		return
+	}
+
+	if ts, ok := i.targetStates[cmd.Target]; ok && ts.Status == TargetStopped {
+		cmd.Response <- ControlResponse{Success: true, Message: fmt.Sprintf("%s already stopped", cmd.Target)}
+		return
+	}
+
+	i.cmdsMu.Lock()
+	c, inCmds := i.cmds[cmd.Target]
+	if inCmds {
+		delete(i.cmds, cmd.Target)
+	}
+	i.cmdsMu.Unlock()
+
+	if inCmds && c != nil {
+		c.Terminate()
+	}
+
+	i.targetStates[cmd.Target] = &TargetState{
+		Target: cmd.Target,
+		Status: TargetStopped,
+	}
+	i.refreshStatusCache()
+
+	log.Logf("[ctl] Stopped %s", cmd.Target)
+	cmd.Response <- ControlResponse{Success: true, Message: fmt.Sprintf("stopped %s", cmd.Target)}
+}
+
+func (i *IBazel) controlRestart(cmd ControlCommand) {
+	idx := containsIdx(i.allTargets, cmd.Target)
+	if idx == -1 {
+		cmd.Response <- ControlResponse{Success: false, Message: fmt.Sprintf("unknown target: %s", cmd.Target)}
+		return
+	}
+
+	// Terminate existing command if running
+	i.cmdsMu.Lock()
+	c, inCmds := i.cmds[cmd.Target]
+	if inCmds {
+		delete(i.cmds, cmd.Target)
+	}
+	i.cmdsMu.Unlock()
+
+	if inCmds && c != nil {
+		c.Terminate()
+	}
+
+	// Find debug args for this target
+	var debugArg []string
+	if idx < len(i.allDebugArgs) {
+		debugArg = i.allDebugArgs[idx]
+	}
+
+	i.targetStates[cmd.Target] = &TargetState{
+		Target:    cmd.Target,
+		Status:    TargetBuilding,
+		DebugArgs: debugArg,
+	}
+	i.refreshStatusCache()
+
+	targets := []string{cmd.Target}
+	i.changeDetected(targets, "source", "ctl:restart")
+	i.beforeCommand(targets, "build")
+
+	// Build (blocks — TUI reads cached "building" status during this)
+	outputBuffer, errBuild := i.build(cmd.Target)
+	i.afterCommand(targets, "build", errBuild == nil, outputBuffer)
+	if errBuild != nil {
+		i.targetStates[cmd.Target] = &TargetState{
+			Target:    cmd.Target,
+			Status:    TargetErrored,
+			DebugArgs: debugArg,
+		}
+		i.refreshStatusCache()
+		cmd.Response <- ControlResponse{Success: false, Message: fmt.Sprintf("build failed for %s: %v", cmd.Target, errBuild)}
+		return
+	}
+
+	// Setup and start
+	newCmd := i.setupRun(cmd.Target, debugArg, i.storedArgsLen)
+	logFile := openFileForLogs(cmd.Target)
+
+	i.cmdsMu.Lock()
+	i.cmds[cmd.Target] = newCmd
+	i.logFiles[cmd.Target] = logFile
+	i.cmdsMu.Unlock()
+
+	i.beforeCommand(targets, "run")
+	startOutput, err := newCmd.Start(logFile)
+	i.afterCommand(targets, "run", err == nil, startOutput)
+	if err != nil {
+		i.targetStates[cmd.Target] = &TargetState{
+			Target:    cmd.Target,
+			Status:    TargetErrored,
+			DebugArgs: debugArg,
+		}
+		i.refreshStatusCache()
+		cmd.Response <- ControlResponse{Success: false, Message: fmt.Sprintf("start failed for %s: %v", cmd.Target, err)}
+		return
+	}
+
+	i.targetStates[cmd.Target] = &TargetState{
+		Target:    cmd.Target,
+		Status:    TargetRunning,
+		DebugArgs: debugArg,
+	}
+	i.refreshStatusCache()
+
+	log.Logf("[ctl] Restarted %s", cmd.Target)
+	cmd.Response <- ControlResponse{Success: true, Message: fmt.Sprintf("restarted %s", cmd.Target)}
+}
+
+func (i *IBazel) controlStart(cmd ControlCommand) {
+	idx := containsIdx(i.allTargets, cmd.Target)
+	if idx == -1 {
+		cmd.Response <- ControlResponse{Success: false, Message: fmt.Sprintf("unknown target: %s", cmd.Target)}
+		return
+	}
+
+	i.cmdsMu.RLock()
+	c, inCmds := i.cmds[cmd.Target]
+	i.cmdsMu.RUnlock()
+	if inCmds && c != nil && c.IsSubprocessRunning() {
+		cmd.Response <- ControlResponse{Success: true, Message: fmt.Sprintf("%s already running", cmd.Target)}
+		return
+	}
+
+	var debugArg []string
+	if idx < len(i.allDebugArgs) {
+		debugArg = i.allDebugArgs[idx]
+	}
+
+	i.targetStates[cmd.Target] = &TargetState{
+		Target:    cmd.Target,
+		Status:    TargetBuilding,
+		DebugArgs: debugArg,
+	}
+	i.refreshStatusCache()
+
+	targets := []string{cmd.Target}
+	i.changeDetected(targets, "source", "ctl:start")
+	i.beforeCommand(targets, "build")
+
+	outputBuffer, errBuild := i.build(cmd.Target)
+	i.afterCommand(targets, "build", errBuild == nil, outputBuffer)
+	if errBuild != nil {
+		i.targetStates[cmd.Target] = &TargetState{
+			Target:    cmd.Target,
+			Status:    TargetErrored,
+			DebugArgs: debugArg,
+		}
+		i.refreshStatusCache()
+		cmd.Response <- ControlResponse{Success: false, Message: fmt.Sprintf("build failed for %s: %v", cmd.Target, errBuild)}
+		return
+	}
+
+	newCmd := i.setupRun(cmd.Target, debugArg, i.storedArgsLen)
+	logFile := openFileForLogs(cmd.Target)
+
+	i.cmdsMu.Lock()
+	i.cmds[cmd.Target] = newCmd
+	i.logFiles[cmd.Target] = logFile
+	i.cmdsMu.Unlock()
+
+	i.beforeCommand(targets, "run")
+	startOutput, err := newCmd.Start(logFile)
+	i.afterCommand(targets, "run", err == nil, startOutput)
+	if err != nil {
+		i.targetStates[cmd.Target] = &TargetState{
+			Target:    cmd.Target,
+			Status:    TargetErrored,
+			DebugArgs: debugArg,
+		}
+		i.refreshStatusCache()
+		cmd.Response <- ControlResponse{Success: false, Message: fmt.Sprintf("start failed for %s: %v", cmd.Target, err)}
+		return
+	}
+
+	i.targetStates[cmd.Target] = &TargetState{
+		Target:    cmd.Target,
+		Status:    TargetRunning,
+		DebugArgs: debugArg,
+	}
+	i.refreshStatusCache()
+
+	log.Logf("[ctl] Started %s", cmd.Target)
+	cmd.Response <- ControlResponse{Success: true, Message: fmt.Sprintf("started %s", cmd.Target)}
+}
+
+func (i *IBazel) controlAdd(cmd ControlCommand) {
+	if containsIdx(i.allTargets, cmd.Target) != -1 {
+		cmd.Response <- ControlResponse{Success: false, Message: fmt.Sprintf("target already managed: %s", cmd.Target)}
+		return
+	}
+
+	i.allTargets = append(i.allTargets, cmd.Target)
+	i.allDebugArgs = append(i.allDebugArgs, cmd.Args)
+
+	i.targetStates[cmd.Target] = &TargetState{
+		Target:    cmd.Target,
+		Status:    TargetBuilding,
+		DebugArgs: cmd.Args,
+	}
+	i.refreshStatusCache()
+
+	targets := []string{cmd.Target}
+	i.changeDetected(targets, "source", "ctl:add")
+	i.beforeCommand(targets, "build")
+
+	outputBuffer, errBuild := i.build(cmd.Target)
+	i.afterCommand(targets, "build", errBuild == nil, outputBuffer)
+	if errBuild != nil {
+		i.targetStates[cmd.Target] = &TargetState{
+			Target:    cmd.Target,
+			Status:    TargetErrored,
+			DebugArgs: cmd.Args,
+		}
+		i.refreshStatusCache()
+		cmd.Response <- ControlResponse{Success: false, Message: fmt.Sprintf("build failed for %s: %v", cmd.Target, errBuild)}
+		return
+	}
+
+	newCmd := i.setupRun(cmd.Target, cmd.Args, i.storedArgsLen)
+	logFile := openFileForLogs(cmd.Target)
+
+	i.cmdsMu.Lock()
+	if i.cmds == nil {
+		i.cmds = make(map[string]command.Command)
+	}
+	i.cmds[cmd.Target] = newCmd
+	if i.logFiles == nil {
+		i.logFiles = make(map[string]*os.File)
+	}
+	i.logFiles[cmd.Target] = logFile
+	i.cmdsMu.Unlock()
+
+	i.beforeCommand(targets, "run")
+	startOutput, err := newCmd.Start(logFile)
+	i.afterCommand(targets, "run", err == nil, startOutput)
+	if err != nil {
+		i.targetStates[cmd.Target] = &TargetState{
+			Target:    cmd.Target,
+			Status:    TargetErrored,
+			DebugArgs: cmd.Args,
+		}
+		i.refreshStatusCache()
+		cmd.Response <- ControlResponse{Success: false, Message: fmt.Sprintf("start failed for %s: %v", cmd.Target, err)}
+		return
+	}
+
+	// Set up file watches for the new target
+	i.watchManyFiles(sourceQuery, []string{cmd.Target}, i.sourceFileWatcher, &i.srcDirToWatch)
+	i.watchManyFiles(buildQuery, []string{cmd.Target}, i.buildFileWatcher, &i.bldDirToWatch)
+	i.targetStates[cmd.Target] = &TargetState{
+		Target:    cmd.Target,
+		Status:    TargetRunning,
+		DebugArgs: cmd.Args,
+	}
+	i.refreshStatusCache()
+
+	log.Logf("[ctl] Added %s", cmd.Target)
+	cmd.Response <- ControlResponse{Success: true, Message: fmt.Sprintf("added %s", cmd.Target)}
+}
+
+func (i *IBazel) controlRemove(cmd ControlCommand) {
+	idx := containsIdx(i.allTargets, cmd.Target)
+	if idx == -1 {
+		cmd.Response <- ControlResponse{Success: false, Message: fmt.Sprintf("unknown target: %s", cmd.Target)}
+		return
+	}
+
+	// Terminate if running
+	i.cmdsMu.Lock()
+	c, inCmds := i.cmds[cmd.Target]
+	if inCmds {
+		delete(i.cmds, cmd.Target)
+	}
+	delete(i.logFiles, cmd.Target)
+	i.cmdsMu.Unlock()
+
+	if inCmds && c != nil {
+		c.Terminate()
+	}
+
+	// Remove from tracking
+	i.allTargets = deleteIdx(i.allTargets, idx)
+	if idx < len(i.allDebugArgs) {
+		i.allDebugArgs = append(i.allDebugArgs[:idx], i.allDebugArgs[idx+1:]...)
+	}
+	delete(i.targetStates, cmd.Target)
+
+	// Clean up dir watch mappings
+	for dir, targets := range i.srcDirToWatch {
+		if ti := containsIdx(targets, cmd.Target); ti != -1 {
+			i.srcDirToWatch[dir] = deleteIdx(targets, ti)
+			if len(i.srcDirToWatch[dir]) == 0 {
+				delete(i.srcDirToWatch, dir)
+			}
+		}
+	}
+	for dir, targets := range i.bldDirToWatch {
+		if ti := containsIdx(targets, cmd.Target); ti != -1 {
+			i.bldDirToWatch[dir] = deleteIdx(targets, ti)
+			if len(i.bldDirToWatch[dir]) == 0 {
+				delete(i.bldDirToWatch, dir)
+			}
+		}
+	}
+
+	i.refreshStatusCache()
+
+	log.Logf("[ctl] Removed %s", cmd.Target)
+	cmd.Response <- ControlResponse{Success: true, Message: fmt.Sprintf("removed %s", cmd.Target)}
+}
+
+

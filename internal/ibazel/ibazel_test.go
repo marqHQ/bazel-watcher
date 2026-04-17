@@ -138,6 +138,9 @@ func (m *mockCommand) assertSignal(t *testing.T, signum syscall.Signal) {
 func (m *mockCommand) IsSubprocessRunning() bool {
 	return m.started && !m.terminated
 }
+func (m *mockCommand) Pid() int {
+	return 0
+}
 
 func getMockCommand(i *IBazel) *mockCommand {
 	c, ok := i.cmd.(*mockCommand)

@@ -73,6 +73,7 @@ type IBazel struct {
 
 	cmd              command.Command
 	cmds             map[string]command.Command
+	cmdsMu           sync.RWMutex // protects cmds map (signal handler + main loop)
 	logFiles         map[string]*os.File
 	srcDirToWatch    map[string][]string
 	bldDirToWatch    map[string][]string
@@ -95,6 +96,13 @@ type IBazel struct {
 	lifecycleListeners []Lifecycle
 
 	state State
+
+	// --- mrun control ---
+	controlCh    chan ControlCommand
+	targetStates map[string]*TargetState
+	allTargets   []string
+	allDebugArgs [][]string
+	storedArgsLen int
 }
 
 func New(version string) (*IBazel, error) {
@@ -146,14 +154,14 @@ func New(version string) (*IBazel, error) {
 func (i *IBazel) isAnyCmdRunning() bool {
 	if i.cmd != nil && i.cmd.IsSubprocessRunning() {
 		return true
-	} else if i.cmds != nil {
-		for _, cmd := range i.cmds {
-			if cmd.IsSubprocessRunning() {
-				return true
-			}
+	}
+	i.cmdsMu.RLock()
+	defer i.cmdsMu.RUnlock()
+	for _, cmd := range i.cmds {
+		if cmd.IsSubprocessRunning() {
+			return true
 		}
 	}
-
 	return false
 }
 
@@ -161,9 +169,15 @@ func (i *IBazel) terminateAllCmds() {
 	if i.cmd != nil {
 		i.cmd.Terminate()
 	}
-	if i.cmds != nil {
+	i.cmdsMu.RLock()
+	cmdsSnapshot := make(map[string]command.Command, len(i.cmds))
+	for k, v := range i.cmds {
+		cmdsSnapshot[k] = v
+	}
+	i.cmdsMu.RUnlock()
+	if len(cmdsSnapshot) > 0 {
 		var wg sync.WaitGroup
-		for _, cmd := range i.cmds {
+		for _, cmd := range cmdsSnapshot {
 			// Terminating a Command is potentially slow as we wait for the Command to gracefully terminate or
 			// waitDuration to elapse. Thus, we start a new goroutine for each so that this waiting can happen in
 			// parallel. The WaitGroup is to ensure that all Commands have ended before handleSignals might exit ibazel.
@@ -181,10 +195,14 @@ func (i *IBazel) killAllCmds() {
 	if i.cmd != nil {
 		i.cmd.Kill()
 	}
-	if i.cmds != nil {
-		for _, cmd := range i.cmds {
-			cmd.Kill()
-		}
+	i.cmdsMu.RLock()
+	cmdsSnapshot := make(map[string]command.Command, len(i.cmds))
+	for k, v := range i.cmds {
+		cmdsSnapshot[k] = v
+	}
+	i.cmdsMu.RUnlock()
+	for _, cmd := range cmdsSnapshot {
+		cmd.Kill()
 	}
 }
 
@@ -253,6 +271,7 @@ func (i *IBazel) Cleanup() {
 	for _, l := range i.lifecycleListeners {
 		l.Cleanup()
 	}
+	i.cleanupControlServer()
 }
 
 func (i *IBazel) targetDecider(target string, rule *blaze_query.Rule) {
@@ -319,6 +338,12 @@ func (i *IBazel) Run(target string, args []string) error {
 func (i *IBazel) RunMultiple(args, target []string, debugArgs [][]string) error {
 	i.args = args
 	argsLength := len(args)
+	i.allTargets = target
+	i.allDebugArgs = debugArgs
+	i.storedArgsLen = argsLength
+	i.controlCh = make(chan ControlCommand, 100)
+	i.targetStates = make(map[string]*TargetState)
+	i.startControlServer()
 	return i.loopMultiple("run", i.runMultiple, target, debugArgs, argsLength)
 }
 
@@ -348,7 +373,12 @@ func (i *IBazel) loop(command string, commandToRun runnableCommand, targets []st
 
 func (i *IBazel) loopMultiple(command string, commandToRun runnableCommands, targets []string, debugArgs [][]string, argsLength int) error {
 	i.state = QUERY
+	var prevState State
 	for {
+		if i.state != prevState {
+			log.Logf("State: %s", i.state)
+			prevState = i.state
+		}
 		i.iterationMultiple(command, commandToRun, targets, debugArgs, argsLength)
 	}
 
@@ -416,7 +446,6 @@ func (i *IBazel) iteration(command string, commandToRun runnableCommand, targets
 }
 
 func (i *IBazel) iterationMultiple(commandString string, commandToRun runnableCommands, targets []string, debugArgs [][]string, argsLength int) {
-	log.Logf("State: %s", i.state)
 	switch i.state {
 	case WAIT:
 		select {
@@ -434,6 +463,8 @@ func (i *IBazel) iterationMultiple(commandString string, commandToRun runnableCo
 				i.prevDir, _ = filepath.Split(e.Name)
 				i.state = DEBOUNCE_QUERY
 			}
+		case cmd := <-i.controlCh:
+			i.handleControlCommand(cmd)
 		}
 	case DEBOUNCE_QUERY:
 		select {
@@ -456,7 +487,11 @@ func (i *IBazel) iterationMultiple(commandString string, commandToRun runnableCo
 		}
 		//new file added need to rebuild all and add to graphs
 		if len(toQuery) == 0 {
-			toQuery = targets
+			if len(i.allTargets) > 0 {
+				toQuery = i.allTargets
+			} else {
+				toQuery = targets
+			}
 		}
 		i.watchManyFiles(buildQuery, toQuery, i.buildFileWatcher, &i.bldDirToWatch)
 		log.Logf("Querying for source files...")
@@ -480,20 +515,32 @@ func (i *IBazel) iterationMultiple(commandString string, commandToRun runnableCo
 			torun = i.srcDirToWatch[i.prevDir]
 		}
 		if len(torun) == 0 {
-			torun = targets
+			if len(i.allTargets) > 0 {
+				torun = i.allTargets
+			} else {
+				torun = targets
+			}
 		}
 
+		i.cmdsMu.RLock()
 		if i.cmds != nil {
 			var wg sync.WaitGroup
 			for _, target := range torun {
+				cmd := i.cmds[target]
+				if cmd == nil {
+					continue
+				}
 				// BeforeRebuild terminates the target command, which can take a while. We want to kick these off in parallel
 				wg.Add(1)
 				go func(cmd command.Command) {
 					defer wg.Done()
 					cmd.BeforeRebuild()
-				}(i.cmds[target])
+				}(cmd)
 			}
+			i.cmdsMu.RUnlock()
 			wg.Wait()
+		} else {
+			i.cmdsMu.RUnlock()
 		}
 
 		log.Logf("%s %s", strings.Title(verb(commandString)), strings.Join(torun, " "))
@@ -505,6 +552,7 @@ func (i *IBazel) iterationMultiple(commandString string, commandToRun runnableCo
 		}
 		i.prevDir = ""
 		i.state = WAIT
+		i.refreshStatusCache()
 	}
 }
 
@@ -622,13 +670,14 @@ func (i *IBazel) setupRun(target string, debugArg []string, argsLength int) comm
 		return commandNotifyCommand(i.startupArgs, i.bazelArgs, target, i.args)
 	} else {
 		// argsLength == -1 when the command is `run`
-		// no need to modify i.args
+		// no need to modify args
+		runArgs := i.args
 		if len(debugArg) > 0 {
-			i.args = append(debugArg, i.args[len(i.args)-argsLength:len(i.args)]...)
+			runArgs = append(debugArg, i.args[len(i.args)-argsLength:len(i.args)]...)
 		} else if argsLength > -1 {
-			i.args = i.args[len(i.args)-argsLength : len(i.args)]
+			runArgs = i.args[len(i.args)-argsLength : len(i.args)]
 		}
-		return commandDefaultCommand(i.startupArgs, i.bazelArgs, target, i.args)
+		return commandDefaultCommand(i.startupArgs, i.bazelArgs, target, runArgs)
 	}
 }
 

@@ -17,6 +17,8 @@ load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "ibazel",
     srcs = [
+        "control.go",
+        "control_server.go",
         "ibazel.go",
         "ibazel_unix.go",
         "ibazel_windows.go",
@@ -41,7 +43,11 @@ go_library(
 
 go_test(
     name = "ibazel_test",
-    srcs = ["ibazel_test.go"],
+    srcs = [
+        "control_server_test.go",
+        "control_test.go",
+        "ibazel_test.go",
+    ],
     embed = [":ibazel"],
     importpath = "github.com/bazelbuild/bazel-watcher/ibazel",
     deps = [

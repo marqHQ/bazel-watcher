@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bazelbuild/bazel-watcher/cmd/ibazel/ctl"
 	"github.com/bazelbuild/bazel-watcher/internal/ibazel"
 	"github.com/bazelbuild/bazel-watcher/internal/ibazel/log"
 )
@@ -185,6 +186,10 @@ func main() {
 			panic(err)
 		}
 		log.SetLogger(log.NewWriterLogger(logFile))
+	}
+
+	if len(flag.Args()) >= 1 && strings.ToLower(flag.Args()[0]) == "ctl" {
+		os.Exit(ctl.Run(flag.Args()[1:]))
 	}
 
 	if len(flag.Args()) < 2 {
